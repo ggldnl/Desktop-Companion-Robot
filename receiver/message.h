@@ -1,42 +1,59 @@
 #include <cstdint>
 #include <cstring> // for memcpy
 
+
 class Message {
 private:
 
-    uint8_t total_num_packets;
-    uint8_t current_num_packets;
-    uint8_t* byte_array;
-    uint8_t byte_array_length;
+  uint8_t totalPacketsNumber;
+  uint8_t currentPacketsNumber;
 
 public:
 
-    uint8_t array_id;
+  // Define exit codes (exceptions are disabled)
+  const uint8_t INVALID_SEQUENCE_NUMBER_EXCEPTION = 1;
 
-    Message(uint8_t id, uint8_t total_packets, uint8_t data_length) :
-        array_id(id),
-        total_num_packets(total_packets),
-        current_num_packets(0),
-        byte_array_length(data_length) {
-        byte_array = new uint8_t[data_length];
+  uint8_t width;
+  uint8_t height;
+  uint8_t messageId;
+  uint8_t* byteArray; // TODO private
+  int byteArrayLength; // TODO private
+
+  Message(uint8_t messageId, uint8_t totalPacketsNumber, uint8_t payloadSize, uint8_t width, uint8_t height) :
+    width(width),
+    height(height),
+    messageId(messageId),
+    totalPacketsNumber(totalPacketsNumber),
+    currentPacketsNumber(0),
+    byteArrayLength(payloadSize * totalPacketsNumber) {
+    byteArray = new uint8_t[byteArrayLength];
+  }
+
+  ~Message() {
+    delete[] byteArray;
+  }
+
+  uint8_t addData(uint8_t seqNum, const uint8_t* payload, uint8_t payloadSize) {
+    if (seqNum >= totalPacketsNumber) {
+      // Invalid sequence number
+      return INVALID_SEQUENCE_NUMBER_EXCEPTION;
     }
 
-    ~Message() {
-        delete[] byte_array;
+    /*
+    // Check if adding the data would exceed allocated memory
+    if ((seqNum + 1) * payloadSize > byteArrayLength) {
+      // Not enough memory allocated
+      return INSUFFICIENT_MEMORY_EXCEPTION;
     }
+    */
 
-    uint8_t addData(uint8_t seqNum, const uint8_t* payload, uint8_t payloadSize) {
-        if (seqNum >= total_num_packets) {
-            // Invalid sequence number
-            return 1;
-        }
+    std::memcpy(&byteArray[seqNum * payloadSize], payload, payloadSize);
+    // std::memcpy(byteArray + (seqNum * payloadSize), payload, payloadSize);
+    currentPacketsNumber++;
+    return 0;
+  }
 
-        std::memcpy(byte_array + (seqNum * payloadSize), payload, payloadSize);
-        current_num_packets++;
-        return 0;
-    }
-
-    bool isComplete() {
-        return current_num_packets == total_num_packets;
-    }
+  bool isComplete() {
+    return currentPacketsNumber == totalPacketsNumber;
+  }
 };

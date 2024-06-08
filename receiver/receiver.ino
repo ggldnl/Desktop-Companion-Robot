@@ -1,101 +1,65 @@
 #include <ESP8266WiFi.h>
-#include <WiFiUdp.h>
+#include <WiFiClient.h>
 #include <Wire.h>
 #include <U8g2lib.h>
-#include <map>
-#include "message.h"
 
+// WiFi credentials
+const char* ssid = "ERR_EMPTY_RESPONSE";
+const char* password = "[Pr0tocol_3rror]={}";
 
-// Wifi settings
-const char *ssid = "ERR_EMPTY_RESPONSE";
-const char *password = "[Pr0tocol_3rror]={}";
-const unsigned int localPort = 5005;
+// Server settings
+WiFiServer server(12345);
+WiFiClient client;
 
-// Data transfer protocol
-WiFiUDP udp;
-const int packetSize = 512;
-std::map<uint8_t, Message> message_map;
-
-// Create an instance of the display
+// OLED display settings
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 void setup() {
+    Serial.begin(115200);
+    
+    // Initialize the OLED display
+    u8g2.begin();
 
-  Serial.begin(115200);
-  delay(1000);
+    // Connect to WiFi
+    WiFi.begin(ssid, password);
+    Serial.print("Connecting to WiFi...");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.print(".");
+    }
+    Serial.println("connected");
 
-  // Connect to WiFi
-  Serial.print("Connecting to: ");
-  Serial.print(ssid);
-  WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("");
-
-  Serial.print("Connected to: ");
-  Serial.println(ssid);
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  // Start UDP server
-  udp.begin(localPort);
-  Serial.printf("UDP server started at port %d\n", localPort);
-
-  // Initialize the display
-  u8g2.begin();
+    // Start the server
+    server.begin();
+    Serial.println("Server started");
 }
 
-
 void loop() {
+    // Check if a client has connected
+    client = server.available();
+    if (client) {
+        Serial.println("Client connected");
+        uint8_t displayBuffer[1024];  // Buffer to hold incoming data
+        int bytesRead = 0;
 
-  byte packetBuffer[packetSize]; // Buffer to hold incoming packet
-  int packetSize = udp.parsePacket();
+        // Read data from the client
+        while (bytesRead < sizeof(displayBuffer)) {
+            if (client.available()) {
+                bytesRead += client.read(displayBuffer + bytesRead, sizeof(displayBuffer) - bytesRead);
+            } else {
+                delay(1); // Small delay to yield to other processes
+            }
+        }
 
-  if (packetSize) {
+        if (bytesRead == sizeof(displayBuffer)) {
+            // Display data on the OLED
+            Serial.println("Update display");
+            u8g2.clearBuffer();
+            u8g2.drawXBMP(0, 0, 128, 64, displayBuffer);
+            u8g2.sendBuffer();
+        }
 
-    // Serial.printf("Received packet of size %d\n", packetSize);
-
-    // Read packet into buffer
-    udp.read(packetBuffer, sizeof(packetBuffer));
-
-    // Extract header from packet
-    uint8_t messageId = packetBuffer[0];
-    uint8_t packetNumber = packetBuffer[1];
-    uint8_t totalPacketsNumber = packetBuffer[2];
-    uint8_t width = packetBuffer[3];
-    uint8_t height = packetBuffer[4];
-    uint8_t* payload = packetBuffer + 5;
-
-    // Calculate payload size
-    int payloadSize = packetSize - 5;
-
-    // Display packet information
-    Serial.printf("Array ID: %d, Sequence Number: %d, Num Packets: %d, Width: %d, Height: %d, Size: %d\n", messageId, packetNumber, totalPacketsNumber, width, height, packetSize);
-    
-    // Check if the message is already in the map
-    auto it = message_map.find(messageId);
-    if (it == message_map.end()) {
-      // If not present, create and add the new message
-      Serial.printf("No entry with message id %d. Adding new message to the map.\n", messageId);
-      Message new_message(messageId, totalPacketsNumber, totalPacketsNumber * payloadSize);
-      it = message_map.emplace(messageId, std::move(new_message)).first;
+        client.stop();
+        Serial.println("Client disconnected");
     }
-
-    // Add data to the message
-    if (!it->second.addData(packetNumber, payload, payloadSize)) {
-      Serial.printf("Data added to message %d: %d/%d\n", messageId, packetNumber, totalPacketsNumber);
-    }
-    
-    if (it->second.isComplete()) {
-      Serial.printf("Message %d complete!\n", messageId);
-    }
-    
-    // Clear buffer for next packet
-    memset(packetBuffer, 0, packetSize);
-
-    delay(50);
-  }
 }
