@@ -10,28 +10,51 @@
 const char* ssid = "ERR_EMPTY_RESPONSE";
 const char* password = "[Pr0tocol_3rror]={}";
 
-// Battery
-float v;
-
-// IMU settings
-Adafruit_MPU6050 mpu;
-float t;
-float ax, ay, az, gx, gy, gz;
-
-// Create a buffer to hold the serialized data to send back to the server.
-// The data includes voltage, temperature, ax, ay, az, gx, gy, gz
-// 8 floats, 4 bytes each, 32 bytes total
-uint8_t replyBuffer[8 * sizeof(float)];
-
 // Server settings
 const int port = 12345;
 WiFiServer server(port);
 WiFiClient client;
 
+// Buffer to hold the incoming data from the server.
+// The buffer has size 64x128 = 8192 bits = 1024 bytes 
+// and matches the size of the oled display.
+// We will have a bit for each pixel that can either be 0
+// if the pixel is off and 1 if the pixel is on.
+const int displayBufferSize = 1024;
+uint8_t displayBuffer[displayBufferSize];  // Buffer to hold incoming data
+int bytesRead = 0;  // How many bytes has been read at a given time
+
+// Buffer to hold the serialized data to send back to the server.
+// The data includes voltage, temperature, ax, ay, az, gx, gy, gz
+// as 8 floats, 4 bytes each, 32 bytes total
+const int replyBufferSize = 8 * sizeof(float);
+uint8_t replyBuffer[replyBufferSize];
+
 // OLED display settings
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 const uint8_t displayWidth = 128;
 const uint8_t displayHeight = 64;
+
+// IMU settings and associated variables
+Adafruit_MPU6050 mpu;
+bool imuInitialized = false; // Flag to check if IMU is initialized
+
+// Temperature from the IMU sensor
+float t = 0.0;
+
+// Acceleration values from the IMU sensor (X, Y, Z axes)
+float ax = 0.0; // Acceleration along the X-axis
+float ay = 0.0; // Acceleration along the Y-axis
+float az = 0.0; // Acceleration along the Z-axis
+
+// Gyroscope values from the IMU sensor (X, Y, Z axes)
+float gx = 0.0; // Angular velocity around the X-axis
+float gy = 0.0; // Angular velocity around the Y-axis
+float gz = 0.0; // Angular velocity around the Z-axis
+
+// Battery voltage
+float v;
+
 
 void setup() {
 
@@ -46,8 +69,12 @@ void setup() {
 }
 
 void setupServer() {
-  // Connect to WiFi
+  /*
+   * Connect to WiFi, initialize the server and log IP address
+   * and the port where we are listening.
+   */
 
+  // Connect to WiFi
   WiFi.begin(ssid, password);
   Serial.print("[INFO] Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
@@ -68,39 +95,51 @@ void setupServer() {
 }
 
 void setupBatteryShield() {
-  // Set A0 as INPUT in order to read battery status
+  /*
+   * The Wemos battery shield v2 has a built int resistor
+   * connected to the A0 pin we can use to monitor the
+   * battery status. Set A0 as INPUT in order to read
+   * the value and log the battery level.
+   */
 
   pinMode(A0, INPUT);
   Serial.println("[INFO] Battery shield initialized");
+
+  updateBatteryLevel();
   Serial.print("[INFO] Battery level: ");
-  updateBatteryLevel(v);
   Serial.println(v);
 }
 
 void setupOLED() {
-  // Setup the OLED display
+  /* 
+   * Setup the OLED display.
+   */
   
   u8g2.begin();
   Serial.println("[INFO] OLED display initialized");
 }
 
 void setupIMU() {
-  // Setup the IMU
+  /*
+   * Setup the IMU and log the ranges if the IMU is found.
+   */
 
   if (!mpu.begin()) {
     Serial.println("[ERROR] Unable to find IMU");
+  } else {
+    Serial.println("[INFO] IMU Initialized");
+
+    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+    Serial.println("[INFO] Accelerometer range set to +- 8G");
+
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+    Serial.println("[INFO] Gyro range set to +- 500 deg/s");
+
+    mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
+    Serial.println("[INFO] Filter bandwidth set to 5 Hz");
+
+    imuInitialized = true;
   }
-  Serial.println("[INFO] IMU Initialized");
-
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  Serial.println("[INFO] Accelerometer range set to +- 8G");
-
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  Serial.println("[INFO] Gyro range set to +- 500 deg/s");
-
-  mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
-  Serial.println("[INFO] Filter bandwidth set to 5 Hz");
-
 }
 
 void loop() {
@@ -108,22 +147,22 @@ void loop() {
   // Check if a client has connected 
   client = server.available();
   if (client) {
+
     Serial.println("[INFO] Client connected");
-    uint8_t displayBuffer[1024];  // Buffer to hold incoming data
-    int bytesRead = 0;
+    bytesRead = 0;
 
     // Read data from the client
-    while (bytesRead < sizeof(displayBuffer)) {
+    while (bytesRead < displayBufferSize) {
       if (client.available()) {
-        bytesRead += client.read(displayBuffer + bytesRead, sizeof(displayBuffer) - bytesRead);
+        bytesRead += client.read(displayBuffer + bytesRead, displayBufferSize - bytesRead);
       } else {
         delay(1); // Small delay to yield to other processes
       }
     }
 
-    if (bytesRead == sizeof(displayBuffer)) {
+    if (bytesRead == displayBufferSize) {
+
       // Display data on the OLED
-      // Serial.println("[INFO] Updating display");
       u8g2.clearBuffer();
       u8g2.drawXBMP(0, 0, displayWidth, displayHeight, displayBuffer);
       u8g2.sendBuffer();
@@ -132,35 +171,58 @@ void loop() {
     // Reply by writing the status back to the server
     sendData();
 
-    // TODO condition to close the connection
-    if (true) {
+    if (termination()) {
       client.stop();
       Serial.println("[INFO] Client disconnected");
     }
   }
 }
 
-void updateBatteryLevel(float &b) {
-  b = analogRead(A0) / 1024.0 * 100;
+bool termination() {
+  /*
+   * As a simple termination condition we check if the received
+   * array only contains 1s
+   */
+
+  for (size_t i = 0; i < replyBufferSize; i++) {
+    if (replyBuffer[i] != 1) {
+        return false;
+    }
+  }
+  return true;
 }
 
-void updateIMU(float &ax, float &ay, float &az, float &gx, float &gy, float &gz, float &temp) {
-  sensors_event_t a, g, t;
-  mpu.getEvent(&a, &g, &t);
+void updateBatteryLevel() {
+  /*
+   * Update the battery level status.
+   */
 
-  ax = a.acceleration.x;
-  ay = a.acceleration.y;
-  az = a.acceleration.z;
-  gx = g.gyro.x;
-  gy = g.gyro.y;
-  gz = g.gyro.z;
-  temp = t.temperature;
+  v = analogRead(A0) / 1024.0 * 100;
+}
+
+void updateIMU() {
+  /*
+   * Update the IMU data if the IMU has been found.
+   */
+
+  if (imuInitialized) {
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+
+    ax = a.acceleration.x;
+    ay = a.acceleration.y;
+    az = a.acceleration.z;
+    gx = g.gyro.x;
+    gy = g.gyro.y;
+    gz = g.gyro.z;
+    t = temp.temperature;
+  }
 }
 
 void sendData() {
     
-  updateBatteryLevel(v);
-  updateIMU(ax, ay, az, gx, gy, gz, t);
+  updateBatteryLevel();
+  updateIMU();
   
   /*
   // Print the variables
